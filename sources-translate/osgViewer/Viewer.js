@@ -1,0 +1,555 @@
+'use strict';
+var Notify = require( 'osg/Notify' );
+var Matrix = require( 'osg/Matrix' );
+var Options = require( 'osg/Options' );
+var Timer = require( 'osg/Timer' );
+var UpdateVisitor = require( 'osg/UpdateVisitor' );
+var MACROUTILS = require( 'osg/Utils' );
+var Texture = require( 'osg/Texture' );
+var OrbitManipulator = require( 'osgGA/OrbitManipulator' );
+var createStats = require( 'osgViewer/createStats' );
+var EventProxy = require( 'osgViewer/eventProxy/EventProxy' );
+var View = require( 'osgViewer/View' );
+var WebGLUtils = require( 'osgViewer/webgl-utils' );
+var WebGLDebugUtils = require( 'osgViewer/webgl-debug' );
+
+
+var OptionsURL = ( function () {
+    var options = {};
+    ( function ( options ) {
+        var vars = [],
+            hash;
+        var indexOptions = window.location.href.indexOf( '?' );
+        if ( indexOptions < 0 ) return;
+
+        var hashes = window.location.href.slice( indexOptions + 1 ).split( '&' );
+        for ( var i = 0; i < hashes.length; i++ ) {
+            hash = hashes[ i ].split( '=' );
+            var element = hash[ 0 ];
+            vars.push( element );
+            var result = hash[ 1 ];
+            if ( result === undefined ) {
+                result = '1';
+            }
+            options[ element ] = result;
+        }
+    } )( options );
+
+    if ( options.log !== undefined ) {
+        var level = options.log.toLowerCase();
+
+        switch ( level ) {
+        case 'debug':
+            Notify.setNotifyLevel( Notify.DEBUG );
+            break;
+        case 'info':
+            Notify.setNotifyLevel( Notify.INFO );
+            break;
+        case 'notice':
+            Notify.setNotifyLevel( Notify.NOTICE );
+            break;
+        case 'warn':
+            Notify.setNotifyLevel( Notify.WARN );
+            break;
+        case 'error':
+            Notify.setNotifyLevel( Notify.ERROR );
+            break;
+        case 'html':
+            ( function () {
+                var logContent = [];
+                var divLogger = document.createElement( 'div' );
+                var codeElement = document.createElement( 'pre' );
+                document.addEventListener( 'DOMContentLoaded', function () {
+                    document.body.appendChild( divLogger );
+                    divLogger.appendChild( codeElement );
+                } );
+                var logFunc = function ( str ) {
+                    logContent.unshift( str );
+                    codeElement.innerHTML = logContent.join( '\n' );
+                };
+                divLogger.style.overflow = 'hidden';
+                divLogger.style.position = 'absolute';
+                divLogger.style.zIndex = '10000';
+                divLogger.style.height = '100%';
+                divLogger.style.maxWidth = '600px';
+                codeElement.style.overflow = 'scroll';
+                codeElement.style.width = '105%';
+                codeElement.style.height = '100%';
+                codeElement.style.fontSize = '10px';
+
+                [ 'log', 'error', 'warn', 'info', 'debug' ].forEach( function ( value ) {
+                    window.console[ value ] = logFunc;
+                } );
+            } )();
+            break;
+        }
+    }
+
+    return options;
+} )();
+
+
+var Viewer = function ( canvas, userOptions, error ) {
+    View.call( this );
+
+    this._startTick = Timer.instance().tick();
+    this._stats = undefined;
+    this._done = false;
+
+    var options = this.initOptions( userOptions );
+    var gl = this.initWebGLContext( canvas, options, error );
+
+    if ( !gl )
+        throw 'No WebGL implementation found';
+
+    // this MACROUTILS.init(); should be removed and replace by something
+    // more natural
+    MACROUTILS.init();
+
+    this.initDeviceEvents( options, canvas );
+    this.initStats( options, canvas );
+
+    this._updateVisitor = new UpdateVisitor();
+
+    this.setUpView( gl.canvas, options );
+
+    this._hmd = null;
+    this._useVR = false; // if we use custom requestAnimationFrame
+};
+
+
+Viewer.prototype = MACROUTILS.objectInherit( View.prototype, {
+
+    initDeviceEvents: function ( options, canvas ) {
+
+        // default argument for mouse binding
+        var defaultMouseEventNode = options.mouseEventNode || canvas;
+
+        var eventsBackend = options.EventBackend || {};
+        if ( !options.EventBackend ) options.EventBackend = eventsBackend;
+        eventsBackend.StandardMouseKeyboard = options.EventBackend.StandardMouseKeyboard || {};
+        var mouseEventNode = eventsBackend.StandardMouseKeyboard.mouseEventNode || defaultMouseEventNode;
+        eventsBackend.StandardMouseKeyboard.mouseEventNode = mouseEventNode;
+        eventsBackend.StandardMouseKeyboard.keyboardEventNode = eventsBackend.StandardMouseKeyboard.keyboardEventNode || document;
+
+        // hammer, Only activate it if we have a touch device in order to fix problems with IE11
+        if ( 'ontouchstart' in window ) {
+            eventsBackend.Hammer = eventsBackend.Hammer || {};
+            eventsBackend.Hammer.eventNode = eventsBackend.Hammer.eventNode || defaultMouseEventNode;
+        }
+        // gamepad
+        eventsBackend.GamePad = eventsBackend.GamePad || {};
+
+        this._eventProxy = this.initEventProxy( options );
+    },
+
+    initOptions: function ( userOptions ) {
+        // use default options
+        var options = new Options();
+
+        if ( userOptions ) {
+            // user options override by user options
+            options.extend( userOptions );
+        }
+
+        // if url options override url options
+        options.extend( OptionsURL );
+
+
+        // Check if Frustum culling is enabled to calculate the clip planes
+        if ( options.getBoolean( 'enableFrustumCulling' ) === true )
+            this.getCamera().getRenderer().getCullVisitor().setEnableFrustumCulling( true );
+
+
+        return options;
+    },
+
+    initWebGLContext: function ( canvas, options, error ) {
+
+        // #FIXME see tojiro's blog for webgl lost context stuffs
+        if ( options.get( 'SimulateWebGLLostContext' ) ) {
+            canvas = WebGLDebugUtils.makeLostContextSimulatingCanvas( canvas );
+            canvas.loseContextInNCalls( options.get( 'SimulateWebGLLostContext' ) );
+        }
+
+        var gl = WebGLUtils.setupWebGL( canvas, options, error );
+
+        canvas.addEventListener( 'webglcontextlost', function ( event ) {
+            this.contextLost();
+            event.preventDefault();
+        }.bind( this ), false );
+
+        canvas.addEventListener( 'webglcontextrestored', function () {
+            this.contextRestored();
+        }.bind( this ), false );
+
+        if ( Notify.reportWebGLError || options.get( 'reportWebGLError' ) ) {
+            gl = WebGLDebugUtils.makeDebugContext( gl );
+        }
+
+        this.initWebGLCaps( gl );
+        this.setGraphicContext( gl );
+
+        return gl;
+    },
+
+    contextLost: function () {
+        Notify.log( 'webgl context lost' );
+        window.cancelAnimationFrame( this._requestID );
+    },
+    contextRestored: function () {
+        Notify.log( 'webgl context restored, but not supported - reload the page' );
+    },
+
+    init: function () {
+        //this._done = false;
+    },
+
+    getUpdateVisitor: function () {
+        return this._updateVisitor;
+    },
+
+    getState: function () {
+        return this.getCamera().getRenderer().getState();
+    },
+
+    initStats: function ( options ) {
+
+        if ( !options.getBoolean( 'stats' ) )
+            return;
+
+        this._stats = createStats();
+    },
+
+    getViewerStats: function () {
+        return this._stats;
+    },
+
+    renderingTraversal: function () {
+
+        if ( this.getScene().getSceneData() )
+            this.getScene().getSceneData().getBound();
+
+
+        if ( this.getCamera() ) {
+
+            var stats = this._stats;
+            var renderer = this.getCamera().getRenderer();
+
+            if ( stats ) stats.rStats( 'cull' ).start();
+            renderer.cull();
+            if ( stats ) stats.rStats( 'cull' ).end();
+
+            if ( stats ) stats.rStats( 'render' ).start();
+            renderer.draw();
+            if ( stats ) stats.rStats( 'render' ).end();
+
+            if ( stats ) {
+                var cullVisitor = renderer.getCullVisitor();
+                stats.rStats( 'cullcamera' ).set( cullVisitor._numCamera );
+                stats.rStats( 'cullmatrixtransform' ).set( cullVisitor._numMatrixTransform );
+                stats.rStats( 'cullprojection' ).set( cullVisitor._numProjection );
+                stats.rStats( 'cullnode' ).set( cullVisitor._numNode );
+                stats.rStats( 'cullightsource' ).set( cullVisitor._numLightSource );
+                stats.rStats( 'cullgeometry' ).set( cullVisitor._numGeometry );
+
+                stats.rStats( 'pushstateset' ).set( renderer.getState()._numPushStateSet );
+            }
+
+        }
+
+    },
+
+
+    updateTraversal: function () {
+
+        var stats = this._stats;
+
+        if ( stats ) stats.rStats( 'update' ).start();
+
+        // update the scene
+        this._updateVisitor.resetStats();
+        this.getScene().updateSceneGraph( this._updateVisitor );
+
+        if ( stats ) stats.rStats( 'updatecallback' ).set( this._updateVisitor._numUpdateCallback );
+
+        // Remove ExpiredSubgraphs from DatabasePager
+        this.getDatabasePager().releaseGLExpiredSubgraphs( 0.005 );
+        // In OSG this.is deferred until the draw traversal, to handle multiple contexts
+        this.flushDeletedGLObjects( 0.005 );
+
+        if ( stats ) stats.rStats( 'update' ).end();
+
+    },
+
+    advance: function ( simulationTime ) {
+
+        var sTime = simulationTime;
+
+        if ( sTime === undefined )
+            sTime = Number.MAX_VALUE;
+
+        var frameStamp = this._frameStamp;
+        var previousFrameNumber = frameStamp.getFrameNumber();
+
+        frameStamp.setFrameNumber( previousFrameNumber + 1 );
+
+        var deltaS = Timer.instance().deltaS( this._startTick, Timer.instance().tick() );
+        frameStamp.setReferenceTime( deltaS );
+
+        var lastSimulationTime = frameStamp.getSimulationTime();
+        frameStamp.setSimulationTime( sTime === Number.MAX_VALUE ? deltaS : sTime ); // set simul time
+        frameStamp.setDeltaTime( frameStamp.getSimulationTime() - lastSimulationTime ); // compute delta since last tick
+
+    },
+
+    beginFrame: function () {
+
+        var stats = this._stats;
+
+        if ( stats ) stats.rStats( 'frame' ).start();
+        if ( stats ) stats.glS.start();
+
+        if ( stats ) stats.rStats( 'rAF' ).tick();
+        if ( stats ) stats.rStats( 'FPS' ).frame();
+
+    },
+
+    endFrame: function () {
+
+        var frameNumber = this.getFrameStamp().getFrameNumber();
+
+        var stats = this._stats;
+        var rStats = stats ? stats.rStats : undefined;
+
+        // update texture stats
+        if ( rStats ) {
+            Texture.getTextureManager( this.getGraphicContext() ).updateStats( frameNumber, rStats );
+        }
+
+        if ( rStats ) rStats( 'frame' ).end();
+
+        if ( rStats ) rStats( 'rStats' ).start();
+        if ( rStats ) rStats().update();
+        if ( rStats ) rStats( 'rStats' ).end();
+
+    },
+
+    checkNeedToDoFrame: function () {
+        return this._requestContinousUpdate || this._requestRedraw;
+    },
+
+    frame: function () {
+
+        this.beginFrame();
+
+        this.advance();
+
+        // update viewport if a resize occured
+        var canvasSizeChanged = this.updateViewport();
+
+        // update inputs devices
+        this.updateEventProxy( this._eventProxy, this.getFrameStamp() );
+
+        // setup framestamp
+        this._updateVisitor.setFrameStamp( this.getFrameStamp() );
+        // Update Manipulator/Event
+        if ( this.getManipulator() ) {
+            this.getManipulator().update( this._updateVisitor );
+            Matrix.copy( this.getManipulator().getInverseMatrix(), this.getCamera().getViewMatrix() );
+        }
+
+        if ( this.checkNeedToDoFrame() || canvasSizeChanged ) {
+            this._requestRedraw = false;
+            this.updateTraversal();
+            this.renderingTraversal();
+        }
+
+        this.endFrame();
+    },
+
+    setDone: function ( bool ) {
+        this._done = bool;
+    },
+
+    done: function () {
+        return this._done;
+    },
+
+    run: function () {
+        var self = this;
+        var render = function () {
+            if ( !self.done() ) {
+
+                if ( self._useVR )
+                    self._requestID = self._hmd.requestAnimationFrame( render );
+                else
+                    self._requestID = window.requestAnimationFrame( render, self.getGraphicContext().canvas );
+
+                self.frame();
+
+                if ( self._useVR )
+                    self._hmd.submitFrame( self._eventProxy.WebVR._lastPose );
+            }
+        };
+        render();
+    },
+
+    setVRDisplay: function ( hmd ) {
+        this._hmd = hmd;
+    },
+
+    setPresentVR: function ( bool ) {
+        if ( !this._hmd ) {
+            Notify.warn( 'no hmd device provided to the viewer!' );
+            return;
+        }
+
+        // reset position/orientation of hmd device
+        this._hmd.resetPose();
+
+        if ( !this._hmd.capabilities.canPresent )
+            return;
+
+        this._useVR = bool;
+
+        if ( bool ) {
+            this._hmd.requestPresent( {
+                source: this.getGraphicContext().canvas
+            } );
+        } else {
+            this._hmd.exitPresent();
+        }
+    },
+
+    setupManipulator: function ( manipulator /*, dontBindDefaultEvent */ ) {
+        if ( manipulator === undefined ) {
+            manipulator = new OrbitManipulator();
+        }
+
+        if ( manipulator.setNode !== undefined ) {
+            manipulator.setNode( this.getSceneData() );
+        } else {
+            // for backward compatibility
+            manipulator.view = this;
+        }
+
+        manipulator.setCamera( this.getCamera() );
+        this.setManipulator( manipulator );
+    },
+
+
+    // updateViewport
+    updateViewport: function () {
+
+        var gl = this.getGraphicContext();
+        var canvas = gl.canvas;
+
+        var hasChanged = this.computeCanvasSize( canvas );
+        if ( !hasChanged )
+            return false;
+
+        var camera = this.getCamera();
+        var vp = camera.getViewport();
+
+        var prevWidth = vp.width();
+        var prevHeight = vp.height();
+
+        var widthChangeRatio = canvas.width / prevWidth;
+        var heightChangeRatio = canvas.height / prevHeight;
+        var aspectRatioChange = widthChangeRatio / heightChangeRatio;
+        vp.setViewport( vp.x() * widthChangeRatio, vp.y() * heightChangeRatio, vp.width() * widthChangeRatio, vp.height() * heightChangeRatio );
+
+        if ( aspectRatioChange !== 1.0 ) {
+            Matrix.preMult( camera.getProjectionMatrix(), Matrix.makeScale( 1.0 / aspectRatioChange, 1.0, 1.0, Matrix.create() ) );
+        }
+
+        return true;
+    },
+
+    // intialize all input devices
+    initEventProxy: function ( argsObject ) {
+        var args = argsObject || {};
+        var deviceEnabled = {};
+
+        var lists = EventProxy;
+        var argumentEventBackend = args.EventBackend;
+
+
+        // loop on each devices and try to initialize it
+        var keys = window.Object.keys( lists );
+        for ( var i = 0, l = keys.length; i < l; i++ ) {
+            var device = keys[ i ];
+
+            // check if the config has a require
+            var initialize = true;
+            var argDevice = {};
+            if ( argumentEventBackend && ( argumentEventBackend[ device ] !== undefined ) ) {
+                var bool = argumentEventBackend[ device ].enable;
+                initialize = bool !== undefined ? bool : true;
+                argDevice = argumentEventBackend[ device ];
+            }
+
+            // extend argDevice with regular options eg:
+            // var options = {
+            //     EventBackend: {
+            //         Hammer: {
+            //             drag_max_touches: 4,
+            //             transform_min_scale: 0.08,
+            //             transform_min_rotation: 180,
+            //             transform_always_block: true
+            //         }
+            //     },
+            //     zoomscroll: false
+            // };
+
+            // to options merged:
+            // var options = {
+            //     drag_max_touches: 4,
+            //     transform_min_scale: 0.08,
+            //     transform_min_rotation: 180,
+            //     transform_always_block: true,
+            //     zoomscroll: false
+            // };
+            //
+            var options = new Options();
+            options.extend( argDevice ).extend( argsObject );
+            delete options.EventBackend;
+
+            if ( initialize ) {
+                var inputDevice = new lists[ device ]( this );
+                inputDevice.init( options );
+                deviceEnabled[ device ] = inputDevice;
+            }
+        }
+        return deviceEnabled;
+    },
+    updateEventProxy: function ( list, frameStamp ) {
+        var keys = window.Object.keys( list );
+        keys.forEach( function ( key ) {
+            var device = list[ key ];
+            if ( device.update )
+                device.update( frameStamp );
+        } );
+    },
+    setManipulator: function ( manipulator ) {
+        if ( this._manipulator )
+            this.removeEventProxy();
+        View.prototype.setManipulator.call( this, manipulator );
+    },
+    removeEventProxy: function () {
+        var list = this._eventProxy;
+        var keys = window.Object.keys( list );
+        keys.forEach( function ( key ) {
+            var device = list[ key ];
+            if ( device.remove )
+                device.remove();
+        } );
+    },
+    getEventProxy: function () {
+        return this._eventProxy;
+    }
+
+} );
+
+module.exports = Viewer;
