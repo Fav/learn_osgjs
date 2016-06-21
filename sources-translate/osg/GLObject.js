@@ -1,5 +1,5 @@
 'use strict';
-
+//基类，提供 GraphicContext 对象的读写
 // Base class for GLResources: Textures, Buffers, Programs, Shaders, FrameBuffers and RenderBuffers
 // It holds a reference to the graphic context that is needed for resource deletion
 

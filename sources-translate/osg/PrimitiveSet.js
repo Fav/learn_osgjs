@@ -1,4 +1,5 @@
 'use strict';
+//基础/原始设定，16进制
 var PrimitiveSet = {};
 PrimitiveSet.POINTS = 0x0000;
 PrimitiveSet.LINES = 0x0001;

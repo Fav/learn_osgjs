@@ -1,11 +1,12 @@
 'use strict';
+//堆栈
 var Stack = function () {
     this.globalDefault = undefined;
     this.lastApplied = undefined;
     this.asChanged = false;
 
     this._values = [];
-    this._back = undefined;
+    this._back = undefined;//栈顶的值
 };
 
 Stack.prototype = {

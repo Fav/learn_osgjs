@@ -14,23 +14,23 @@ var PagedLOD = function () {
     Lod.call( this );
     this._perRangeDataList = [];
     this._loading = false;
-    this._expiryTime = 0.0;
-    this._expiryFrame = 0;
-    this._centerMode = Lod.USER_DEFINED_CENTER;
-    this._frameNumberOfLastTraversal = 0;
-    this._databasePath = '';
-    this._numChildrenThatCannotBeExpired = 0;
+    this._expiryTime = 0.0;		//有效时间
+    this._expiryFrame = 0;		//有效 框？ 帧？	
+    this._centerMode = Lod.USER_DEFINED_CENTER;		//用户自定义中心
+    this._frameNumberOfLastTraversal = 0;			//帧 数  最后  遍历
+    this._databasePath = '';						//数据路径
+    this._numChildrenThatCannotBeExpired = 0;		//无效子节点个数？
 };
 
 /**
- *  PerRangeData utility structure to store per range values
+ *  PerRangeData utility structure to store per range values  每个范围值？
  *  @class PerRangeData
  */
 var PerRangeData = function () {
     this.filename = '';
     this.function = undefined;
     this.loaded = false;
-    this.timeStamp = 0.0;
+    this.timeStamp = 0.0;		//时间戳
     this.frameNumber = 0;
     this.frameNumberOfLastTraversal = 0;
     this.dbrequest = undefined;
@@ -58,7 +58,7 @@ PagedLOD.prototype = MACROUTILS.objectLibraryClass( MACROUTILS.objectInherit( Lo
     setExpiryTime: function ( expiryTime ) {
         this._expiryTime = expiryTime;
     },
-	//数据库路径
+	//数据库路径，内容是什么呢？
     setDatabasePath: function ( path ) {
         this._databasePath = path;
     },
@@ -67,6 +67,7 @@ PagedLOD.prototype = MACROUTILS.objectLibraryClass( MACROUTILS.objectInherit( Lo
         return this._databasePath;
     },
 	//设置 等级对应的文件名
+	//setFileName(0,"cow.osg")
     setFileName: function ( childNo, filename ) {
         // May we should expand the vector first?
         if ( childNo >= this._perRangeDataList.length ) {
@@ -96,7 +97,7 @@ PagedLOD.prototype = MACROUTILS.objectLibraryClass( MACROUTILS.objectInherit( Lo
     addChildNode: function ( node ) {
         Lod.prototype.addChildNode.call( this, node );
     },
-	//帧数  最后便利
+	//帧数  最后 遍历  什么意思。。。。。
     setFrameNumberOfLastTraversal: function ( frameNumber ) {
         this._frameNumberOfLastTraversal = frameNumber;
     },
@@ -138,7 +139,7 @@ PagedLOD.prototype = MACROUTILS.objectLibraryClass( MACROUTILS.objectInherit( Lo
             }
         }
     },
-
+	//	遍历
     traverse: ( function () {
 
         // avoid to generate variable on the heap to limit garbage collection

@@ -30,6 +30,7 @@ Lod.UNION_OF_BOUNDING_SPHERE_AND_USER_DEFINED = 2;
 /** @lends Lod.prototype */
 Lod.prototype = MACROUTILS.objectLibraryClass( MACROUTILS.objectInherit( Node.prototype, {
     // Functions here
+    //获取由主封闭体积的物体空间半径
     getRadius: function () {
         return this._radius;
     },
@@ -55,7 +56,7 @@ Lod.prototype = MACROUTILS.objectLibraryClass( MACROUTILS.objectInherit( Node.pr
     setCenterMode: function ( centerMode ) {
         this._centerMode = centerMode;
     },
-
+    // 外包球边界
     computeBoundingSphere: function ( bsphere ) {
         if ( this._centerMode === Lod.USER_DEFINED_CENTER && this._radius >= 0.0 ) {
             bsphere.set( this._userDefinedCenter, this._radius );
